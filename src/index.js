@@ -1,3 +1,5 @@
+
+
 /**
  * KOYE Main Server - Multi-DB Chat System
  * 
@@ -178,13 +180,151 @@ const dbManager = new MultiDbManager();
 // Multer for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
 
-// API Keys
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const PIXAZO_API_KEY = process.env.PIXAZO_API_KEY;
-const HITEM3D_CLIENT_ID = process.env.HITEM3D_CLIENT_ID;
-const HITEM3D_CLIENT_SECRET = process.env.HITEM3D_CLIENT_SECRET;
-const KIE_API_KEY = process.env.KIE_API_KEY;
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+// ============== MULTI-API FALLBACK MANAGER ==============
+
+class MultiApiManager {
+    constructor() {
+        this.apis = {
+            gemini: [],
+            pixazo: [],
+            rapidapi: [],
+            hitem3d: [],
+            kie: []
+        };
+        this.currentIndex = {
+            gemini: 0,
+            pixazo: 0,
+            rapidapi: 0,
+            hitem3d: 0,
+            kie: 0
+        };
+        this.loadApiKeys();
+    }
+
+    loadApiKeys() {
+        // Load Gemini API keys (GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.)
+        let idx = 1;
+        while (process.env[`GEMINI_API_KEY_${idx}`]) {
+            this.apis.gemini.push(process.env[`GEMINI_API_KEY_${idx}`]);
+            idx++;
+        }
+        // Fallback to single key format
+        if (this.apis.gemini.length === 0 && process.env.GEMINI_API_KEY) {
+            this.apis.gemini.push(process.env.GEMINI_API_KEY);
+        }
+
+        // Load Pixazo API keys
+        idx = 1;
+        while (process.env[`PIXAZO_API_KEY_${idx}`]) {
+            this.apis.pixazo.push(process.env[`PIXAZO_API_KEY_${idx}`]);
+            idx++;
+        }
+        if (this.apis.pixazo.length === 0 && process.env.PIXAZO_API_KEY) {
+            this.apis.pixazo.push(process.env.PIXAZO_API_KEY);
+        }
+
+        // Load RapidAPI keys
+        idx = 1;
+        while (process.env[`RAPIDAPI_KEY_${idx}`]) {
+            this.apis.rapidapi.push(process.env[`RAPIDAPI_KEY_${idx}`]);
+            idx++;
+        }
+        if (this.apis.rapidapi.length === 0 && process.env.RAPIDAPI_KEY) {
+            this.apis.rapidapi.push(process.env.RAPIDAPI_KEY);
+        }
+
+        // Load Hitem3D credentials (paired)
+        idx = 1;
+        while (process.env[`HITEM3D_CLIENT_ID_${idx}`] && process.env[`HITEM3D_CLIENT_SECRET_${idx}`]) {
+            this.apis.hitem3d.push({
+                clientId: process.env[`HITEM3D_CLIENT_ID_${idx}`],
+                clientSecret: process.env[`HITEM3D_CLIENT_SECRET_${idx}`]
+            });
+            idx++;
+        }
+        if (this.apis.hitem3d.length === 0 && process.env.HITEM3D_CLIENT_ID && process.env.HITEM3D_CLIENT_SECRET) {
+            this.apis.hitem3d.push({
+                clientId: process.env.HITEM3D_CLIENT_ID,
+                clientSecret: process.env.HITEM3D_CLIENT_SECRET
+            });
+        }
+
+        // Load KIE API keys
+        idx = 1;
+        while (process.env[`KIE_API_KEY_${idx}`]) {
+            this.apis.kie.push(process.env[`KIE_API_KEY_${idx}`]);
+            idx++;
+        }
+        if (this.apis.kie.length === 0 && process.env.KIE_API_KEY) {
+            this.apis.kie.push(process.env.KIE_API_KEY);
+        }
+
+        console.log(`  🔑 API Keys loaded:`);
+        console.log(`     - Gemini: ${this.apis.gemini.length} key(s)`);
+        console.log(`     - Pixazo: ${this.apis.pixazo.length} key(s)`);
+        console.log(`     - RapidAPI: ${this.apis.rapidapi.length} key(s)`);
+        console.log(`     - Hitem3D: ${this.apis.hitem3d.length} credential(s)`);
+        console.log(`     - KIE: ${this.apis.kie.length} key(s)`);
+    }
+
+    getKey(service) {
+        const keys = this.apis[service];
+        if (!keys || keys.length === 0) return null;
+        return keys[this.currentIndex[service]];
+    }
+
+    rotateKey(service) {
+        const keys = this.apis[service];
+        if (!keys || keys.length <= 1) return false;
+
+        this.currentIndex[service] = (this.currentIndex[service] + 1) % keys.length;
+        console.log(`  ⚠️  Rotated ${service} API key to index ${this.currentIndex[service]}`);
+        return true;
+    }
+
+    hasKey(service) {
+        return this.apis[service] && this.apis[service].length > 0;
+    }
+
+    getKeyCount(service) {
+        return this.apis[service]?.length || 0;
+    }
+
+    // Execute a function with automatic fallback to next API key on failure
+    async withFallback(service, fn) {
+        const keys = this.apis[service];
+        if (!keys || keys.length === 0) {
+            throw new Error(`No API keys configured for ${service}`);
+        }
+
+        const startIndex = this.currentIndex[service];
+        let lastError = null;
+
+        for (let attempts = 0; attempts < keys.length; attempts++) {
+            try {
+                const key = this.getKey(service);
+                return await fn(key);
+            } catch (error) {
+                lastError = error;
+                console.warn(`  ⚠️  ${service} API key ${this.currentIndex[service]} failed: ${error.message}`);
+
+                // Rotate to next key
+                if (!this.rotateKey(service)) {
+                    break; // Only one key available
+                }
+
+                // If we've tried all keys, stop
+                if (this.currentIndex[service] === startIndex) {
+                    break;
+                }
+            }
+        }
+
+        throw lastError || new Error(`All ${service} API keys failed`);
+    }
+}
+
+const apiManager = new MultiApiManager();
 
 // Credit costs (from credit-cost-cli.md)
 const CREDIT_COSTS = {
@@ -282,7 +422,7 @@ Always inform users of credit costs before generating.`;
 // ============== GEMINI CHAT ==============
 
 async function* streamGeminiChat(messages, systemPrompt = SYSTEM_PROMPT) {
-    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY required');
+    if (!apiManager.hasKey('gemini')) throw new Error('No Gemini API keys configured');
 
     const contents = [
         { role: 'user', parts: [{ text: systemPrompt }] },
@@ -293,8 +433,11 @@ async function* streamGeminiChat(messages, systemPrompt = SYSTEM_PROMPT) {
         }))
     ];
 
+    // For streaming, we use the current key (fallback on error would break the stream)
+    const apiKey = apiManager.getKey('gemini');
+
     const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${GEMINI_API_KEY}&alt=sse`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${apiKey}&alt=sse`,
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -303,7 +446,7 @@ async function* streamGeminiChat(messages, systemPrompt = SYSTEM_PROMPT) {
     );
 
     if (!response.ok) {
-        const error = await response.text();
+        apiManager.rotateKey('gemini'); // Rotate for next request
         throw new Error(`Gemini API error: ${response.status}`);
     }
 
@@ -329,89 +472,89 @@ async function* streamGeminiChat(messages, systemPrompt = SYSTEM_PROMPT) {
 }
 
 async function sendGeminiChat(messages, systemPrompt = SYSTEM_PROMPT) {
-    if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY required');
+    return await apiManager.withFallback('gemini', async (apiKey) => {
+        const contents = [
+            { role: 'user', parts: [{ text: systemPrompt }] },
+            { role: 'model', parts: [{ text: 'Hello! I\'m KOYE AI.' }] },
+            ...messages.map(m => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: m.content }]
+            }))
+        ];
 
-    const contents = [
-        { role: 'user', parts: [{ text: systemPrompt }] },
-        { role: 'model', parts: [{ text: 'Hello! I\'m KOYE AI.' }] },
-        ...messages.map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-        }))
-    ];
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 8192, temperature: 0.7 } })
+            }
+        );
 
-    const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents, generationConfig: { maxOutputTokens: 8192, temperature: 0.7 } })
-        }
-    );
+        if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
 
-    if (!response.ok) throw new Error(`Gemini API error: ${response.status}`);
-
-    const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const data = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    });
 }
 
-// ============== ASSET GENERATION (Same as before) ==============
+// ============== ASSET GENERATION (with Multi-API Fallback) ==============
 
 async function generateImageWithPixazo(prompt, options = {}) {
-    if (!PIXAZO_API_KEY) throw new Error('PIXAZO_API_KEY required');
+    return await apiManager.withFallback('pixazo', async (apiKey) => {
+        const response = await fetch('https://gateway.pixazo.ai/byteplus/v1/getTextToImage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': apiKey },
+            body: JSON.stringify({
+                model: options.model || 'seedream-3-0-t2i-250415',
+                prompt: prompt.trim(),
+                size: options.size || '1024x1024',
+                guidance_scale: 2.5,
+                watermark: false
+            })
+        });
 
-    const response = await fetch('https://gateway.pixazo.ai/byteplus/v1/getTextToImage', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': PIXAZO_API_KEY },
-        body: JSON.stringify({
-            model: options.model || 'seedream-3-0-t2i-250415',
-            prompt: prompt.trim(),
-            size: options.size || '1024x1024',
-            guidance_scale: 2.5,
-            watermark: false
-        })
+        if (!response.ok) throw new Error(`Pixazo error: ${response.status}`);
+        const data = await response.json();
+        return data.data?.[0]?.url;
     });
-
-    if (!response.ok) throw new Error(`Pixazo error: ${response.status}`);
-    const data = await response.json();
-    return data.data?.[0]?.url;
 }
 
 async function generateVideoWithVeo(prompt, options = {}) {
-    if (!PIXAZO_API_KEY) throw new Error('PIXAZO_API_KEY required');
+    return await apiManager.withFallback('pixazo', async (apiKey) => {
+        const response = await fetch('https://gateway.pixazo.ai/veo/v1/veo-3.1/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': apiKey },
+            body: JSON.stringify({
+                prompt: prompt.trim(),
+                aspect_ratio: options.aspect_ratio || '16:9',
+                duration: options.duration || 8,
+                resolution: options.resolution || '1080p',
+                generate_audio: true
+            })
+        });
 
-    const response = await fetch('https://gateway.pixazo.ai/veo/v1/veo-3.1/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Ocp-Apim-Subscription-Key': PIXAZO_API_KEY },
-        body: JSON.stringify({
-            prompt: prompt.trim(),
-            aspect_ratio: options.aspect_ratio || '16:9',
-            duration: options.duration || 8,
-            resolution: options.resolution || '1080p',
-            generate_audio: true
-        })
+        if (!response.ok) throw new Error(`Veo error: ${response.status}`);
+        return await response.json();
     });
-
-    if (!response.ok) throw new Error(`Veo error: ${response.status}`);
-    return await response.json();
 }
 
 async function generateAudioWithElevenLabs(text, options = {}) {
-    if (!RAPIDAPI_KEY) throw new Error('RAPIDAPI_KEY required');
+    return await apiManager.withFallback('rapidapi', async (apiKey) => {
+        const response = await fetch('https://elevenlabs-sound-effects.p.rapidapi.com/generate-sound', {
+            method: 'POST',
+            headers: {
+                'x-rapidapi-key': apiKey,
+                'x-rapidapi-host': 'elevenlabs-sound-effects.p.rapidapi.com',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ text: text.trim(), prompt_influence: 0.3, duration_seconds: options.duration_seconds || null })
+        });
 
-    const response = await fetch('https://elevenlabs-sound-effects.p.rapidapi.com/generate-sound', {
-        method: 'POST',
-        headers: {
-            'x-rapidapi-key': RAPIDAPI_KEY,
-            'x-rapidapi-host': 'elevenlabs-sound-effects.p.rapidapi.com',
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ text: text.trim(), prompt_influence: 0.3, duration_seconds: options.duration_seconds || null })
+        if (!response.ok) throw new Error(`ElevenLabs error: ${response.status}`);
+        const data = await response.json();
+        return { base64: data.data?.[0]?.content_base64, contentType: data.data?.[0]?.content_type || 'audio/mpeg' };
     });
-
-    if (!response.ok) throw new Error(`ElevenLabs error: ${response.status}`);
-    const data = await response.json();
-    return { base64: data.data?.[0]?.content_base64, contentType: data.data?.[0]?.content_type || 'audio/mpeg' };
 }
 
 // ============== CHAT SESSIONS (Multi-DB) ==============
@@ -837,11 +980,11 @@ app.get('/health', (req, res) => {
         chat_databases: dbManager.getAllChatDbs().size,
         active_chat_db: dbManager.getActiveDbId(),
         apis: {
-            gemini: !!GEMINI_API_KEY,
-            pixazo: !!PIXAZO_API_KEY,
-            hitem3d: !!(HITEM3D_CLIENT_ID && HITEM3D_CLIENT_SECRET),
-            elevenLabs: !!RAPIDAPI_KEY,
-            kie: !!KIE_API_KEY
+            gemini: { available: apiManager.hasKey('gemini'), keys: apiManager.getKeyCount('gemini') },
+            pixazo: { available: apiManager.hasKey('pixazo'), keys: apiManager.getKeyCount('pixazo') },
+            hitem3d: { available: apiManager.hasKey('hitem3d'), keys: apiManager.getKeyCount('hitem3d') },
+            rapidapi: { available: apiManager.hasKey('rapidapi'), keys: apiManager.getKeyCount('rapidapi') },
+            kie: { available: apiManager.hasKey('kie'), keys: apiManager.getKeyCount('kie') }
         }
     });
 });
