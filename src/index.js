@@ -1,5 +1,4 @@
 
-
 /**
  * KOYE Main Server - Multi-DB Chat System
  * 
@@ -399,6 +398,7 @@ async function getUserCredits(userId) {
 
 const SYSTEM_PROMPT = `You are KOYE AI, an expert in game design, game coding, and asset creation for both 2D and 3D games.
 You help users design game assets through deep conversations and accuracy.
+You can also create, modify, rename, and delete files and folders in the user's project, and run shell commands.
 
 CREDIT COSTS:
 - Chat: 50 credits per 1M tokens
@@ -408,16 +408,78 @@ CREDIT COSTS:
 - 3D Model (512p): 25 credits
 - 3D Model (1024p): 50 credits
 - 3D Model (1536p): 90 credits
+- File operations: FREE
 
-When you need to generate assets, output them in this JSON format:
+AVAILABLE ACTIONS:
+When you need to perform actions, output them in this JSON format:
+
 \`\`\`koye-action
 {
-  "action": "generate_image" | "generate_3d" | "generate_audio" | "generate_video" | "create_file",
+  "action": "<action_type>",
   "params": { ... }
 }
 \`\`\`
 
-Always inform users of credit costs before generating.`;
+ACTION TYPES:
+
+1. CREATE FILE:
+\`\`\`koye-action
+{"action": "create_file", "params": {"path": "relative/path/to/file.js", "content": "// file content here"}}
+\`\`\`
+
+2. DELETE FILE:
+\`\`\`koye-action
+{"action": "delete_file", "params": {"path": "relative/path/to/file.js"}}
+\`\`\`
+
+3. RENAME/MOVE FILE:
+\`\`\`koye-action
+{"action": "rename_file", "params": {"from": "old/path.js", "to": "new/path.js"}}
+\`\`\`
+
+4. CREATE FOLDER:
+\`\`\`koye-action
+{"action": "create_folder", "params": {"path": "relative/path/to/folder"}}
+\`\`\`
+
+5. DELETE FOLDER:
+\`\`\`koye-action
+{"action": "delete_folder", "params": {"path": "relative/path/to/folder"}}
+\`\`\`
+
+6. RUN COMMAND (OS-aware - use appropriate command for user's OS):
+\`\`\`koye-action
+{"action": "run_command", "params": {"command": "npm install express", "description": "Installing Express.js"}}
+\`\`\`
+
+7. GENERATE IMAGE:
+\`\`\`koye-action
+{"action": "generate_image", "params": {"prompt": "description", "size": "1024x1024"}}
+\`\`\`
+
+8. GENERATE 3D MODEL:
+\`\`\`koye-action
+{"action": "generate_3d", "params": {"prompt": "description", "resolution": 512}}
+\`\`\`
+
+9. GENERATE AUDIO:
+\`\`\`koye-action
+{"action": "generate_audio", "params": {"prompt": "sound description", "duration_seconds": 5}}
+\`\`\`
+
+10. GENERATE VIDEO:
+\`\`\`koye-action
+{"action": "generate_video", "params": {"prompt": "video description", "duration": 8}}
+\`\`\`
+
+IMPORTANT RULES:
+- When user asks to create a file, ALWAYS use create_file action - don't just show the code
+- Use relative paths from the project root
+- For commands, consider the user's OS (platform info will be provided)
+- Always inform users of credit costs before generating paid assets
+- File operations are FREE and don't cost credits
+- You can chain multiple actions in your response`;
+
 
 // ============== GEMINI CHAT ==============
 
@@ -685,7 +747,7 @@ app.get('/chat/sessions/:id/messages', authenticateToken, async (req, res) => {
 app.post('/chat/sessions/:id/messages', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { content, db_id } = req.body;
+        const { content, db_id, context } = req.body;
         const userId = req.user.user_id;
 
         // Determine which database to use
@@ -723,8 +785,14 @@ app.post('/chat/sessions/:id/messages', authenticateToken, async (req, res) => {
             .order('created_at', { ascending: true })
             .limit(20);
 
-        // Generate AI response
-        const reply = await sendGeminiChat(history || []);
+        // Create context-aware system prompt
+        let contextPrompt = SYSTEM_PROMPT;
+        if (context) {
+            contextPrompt += `\n\nUSER CONTEXT:\n- Operating System: ${context.os || 'unknown'}\n- Working Directory: ${context.cwd || 'unknown'}\n\nUse appropriate commands for this OS (e.g., use PowerShell commands for win32, bash for linux/darwin).`;
+        }
+
+        // Generate AI response with context
+        const reply = await sendGeminiChat(history || [], contextPrompt);
 
         // Parse and execute actions
         const actions = parseActions(reply);
@@ -809,7 +877,28 @@ async function executeActions(actions, userId) {
                     break;
 
                 case 'create_file':
-                    results.push({ action: 'create_file', success: true, path: action.params.path, content: action.params.content });
+                    // Pass through to client for local execution
+                    results.push({ action: 'create_file', success: true, params: action.params, path: action.params.path });
+                    break;
+
+                case 'delete_file':
+                    results.push({ action: 'delete_file', success: true, params: action.params, path: action.params.path });
+                    break;
+
+                case 'rename_file':
+                    results.push({ action: 'rename_file', success: true, params: action.params, from: action.params.from, to: action.params.to });
+                    break;
+
+                case 'create_folder':
+                    results.push({ action: 'create_folder', success: true, params: action.params, path: action.params.path });
+                    break;
+
+                case 'delete_folder':
+                    results.push({ action: 'delete_folder', success: true, params: action.params, path: action.params.path });
+                    break;
+
+                case 'run_command':
+                    results.push({ action: 'run_command', success: true, params: action.params, command: action.params.command });
                     break;
 
                 default:
@@ -994,3 +1083,4 @@ server.listen(PORT, () => {
     console.log(`🚀 KOYE Main Server running on port ${PORT}`);
     console.log(`   Chat DBs: ${dbManager.getAllChatDbs().size}, Active: ${dbManager.getActiveDbId()}`);
 });
+
